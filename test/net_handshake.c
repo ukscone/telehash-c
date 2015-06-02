@@ -8,8 +8,8 @@ link_t handshake(mesh_t mesh, lob_t json, pipe_t pipe)
   LOG("HS-ACCEPT %s",lob_json(json));
   state = 1;
   lob_t hs = mesh_handshakes(mesh,json,"custom");
-  lob_t key = mesh_handshakes(mesh,json,"key");
-  if(!hs || !key) return NULL;
+  lob_t key = mesh_handshakes(mesh,json,"link");
+  if(!hs || !key) return LOG("incomplete %d %d",hs,key);
   state = 2;
   return mesh_add(mesh, key, pipe);
 }
@@ -36,7 +36,7 @@ int main(int argc, char **argv)
 //  fail_unless(linkBA);
 
   state = 0;
-  fail_unless(link_sync(linkAB));
+  link_sync(linkAB);
   net_udp4_receive(netB);
   fail_unless(state == 1);
 
@@ -48,6 +48,9 @@ int main(int argc, char **argv)
   net_udp4_receive(netB);
   fail_unless(state == 2);
   
+  net_udp4_receive(netA);
+  net_udp4_receive(netB);
+  net_udp4_receive(netB);
   net_udp4_receive(netA);
   fail_unless(link_up(linkAB));
 

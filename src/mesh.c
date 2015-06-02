@@ -58,6 +58,7 @@ mesh_t mesh_free(mesh_t mesh)
 
   xht_free(mesh->index);
   lob_free(mesh->keys);
+  lob_free(mesh->paths);
   e3x_self_free(mesh->self);
   if(mesh->uri) free(mesh->uri);
   if(mesh->ipv4_local) free(mesh->ipv4_local);
@@ -74,6 +75,7 @@ uint8_t mesh_load(mesh_t mesh, lob_t secrets, lob_t keys)
   if(!(mesh->self = e3x_self_new(secrets, keys))) return 2;
   mesh->keys = lob_copy(keys);
   mesh->id = hashname_keys(mesh->keys);
+  LOG("mesh is %s",mesh->id->hashname);
   return 0;
 }
 
@@ -88,29 +90,58 @@ lob_t mesh_generate(mesh_t mesh)
   return secrets;
 }
 
-// return the best current URI to this endpoint, optional override protocol
-char *mesh_uri(mesh_t mesh, char *protocol)
+// return the best current URI to this endpoint, optional base uri
+char *mesh_uri(mesh_t mesh, char *base)
 {
-  util_uri_t uri;
+  lob_t uri;
   if(!mesh) return LOG("bad args");
 
-  // load existing or create new
-  uri = (mesh->uri) ? util_uri_new(mesh->uri, protocol) : util_uri_new("127.0.0.1", protocol);
-  
-  // TODO don't override a router-provided base
+  // TODO use a router-provided base
+  uri = util_uri_parse(base?base:"link://127.0.0.1");
 
   // set best current values
-  util_uri_keys(uri, mesh->keys);
-  if(mesh->port_local) util_uri_port(uri, mesh->port_local);
-  if(mesh->port_public) util_uri_port(uri, mesh->port_public);
-  if(mesh->ipv4_local) util_uri_address(uri, mesh->ipv4_local);
-  if(mesh->ipv4_public) util_uri_address(uri, mesh->ipv4_public);
+  util_uri_add_keys(uri, mesh->keys);
+  if(mesh->port_local) lob_set_uint(uri, "port", mesh->port_local);
+  if(mesh->port_public) lob_set_uint(uri, "port", mesh->port_public);
+  if(mesh->ipv4_local) lob_set(uri, "hostname", mesh->ipv4_local);
+  if(mesh->ipv4_public) lob_set(uri, "hostname", mesh->ipv4_public);
 
   // save/return new encoded output
   if(mesh->uri) free(mesh->uri);
-  mesh->uri = strdup(util_uri_encode(uri));
-  util_uri_free(uri);
+  mesh->uri = strdup(util_uri_format(uri));
+  lob_free(uri);
   return mesh->uri;
+}
+
+// generate json of mesh keys and current paths
+lob_t mesh_json(mesh_t mesh)
+{
+  size_t len = 3; // []\0
+  char *paths;
+  lob_t json, path;
+  if(!mesh) return LOG("bad args");
+
+  json = lob_new();
+  lob_set(json,"hashname",mesh->id->hashname);
+  lob_set_raw(json,"keys",0,(char*)mesh->keys->head,mesh->keys->head_len);
+
+  paths = malloc(len);
+  sprintf(paths,"[");
+  for(path = mesh->paths;path;path = lob_next(path))
+  {
+    len += path->head_len+1;
+    paths = realloc(paths, len);
+    sprintf(paths+strlen(paths),"%.*s,",(int)path->head_len,path->head);
+  }
+  if(len == 3)
+  {
+    sprintf(paths+strlen(paths),"]");
+  }else{
+    sprintf(paths+(strlen(paths)-1),"]");
+  }
+  lob_set_raw(json,"paths",0,paths,strlen(paths));
+  free(paths);
+  return json;
 }
 
 link_t mesh_add(mesh_t mesh, lob_t json, pipe_t pipe)
@@ -133,7 +164,15 @@ link_t mesh_add(mesh_t mesh, lob_t json, pipe_t pipe)
   if(pipe) link_pipe(link, pipe);
   for(;paths;paths = paths->next) link_path(link,paths);
 
-  return NULL;
+  return link;
+}
+
+link_t mesh_linked(mesh_t mesh, char *hashname)
+{
+  if(!mesh || !hashname_valid(hashname)) return NULL;
+  
+  return xht_get(mesh->index, hashname);
+  
 }
 
 // create our generic callback linked list entry
@@ -212,6 +251,7 @@ void mesh_on_discover(mesh_t mesh, char *id, link_t (*discover)(mesh_t mesh, lob
 void mesh_discover(mesh_t mesh, lob_t discovered, pipe_t pipe)
 {
   on_t on;
+  LOG("running mesh discover with %s",lob_json(discovered));
   for(on = mesh->on; on; on = on->next) if(on->discover) on->discover(mesh, discovered, pipe);
 }
 
@@ -220,8 +260,7 @@ mesh_t mesh_handshake(mesh_t mesh, lob_t handshake)
 {
   if(!mesh) return NULL;
   if(handshake && !lob_get(handshake,"type")) return LOG("handshake missing a type: %s",lob_json(handshake));
-  lob_free(mesh->handshake);
-  mesh->handshake = handshake;
+  mesh->handshakes = lob_link(handshake, mesh->handshakes);
   return mesh;
 }
 
@@ -260,26 +299,31 @@ link_t mesh_receive_handshake(mesh_t mesh, lob_t handshake, pipe_t pipe)
   
   // normalize handshake
   handshake->id = now; // save when we cached it
-  if(!lob_get(handshake,"type")) lob_set(handshake,"type","key"); // default to key type
+  if(!lob_get(handshake,"type")) lob_set(handshake,"type","link"); // default to link type
   if(!lob_get_uint(handshake,"at")) lob_set_uint(handshake,"at",now); // require an at
   
-  // validate/extend key handshakes immediately
-  if(util_cmp(lob_get(handshake,"type"),"key") == 0 && (outer = lob_linked(handshake)))
+  // validate/extend link handshakes immediately
+  if(util_cmp(lob_get(handshake,"type"),"link") == 0 && (outer = lob_linked(handshake)))
   {
-    // make sure csid is set to get the hashname
-    util_hex(outer->head,1,hexid);
-    lob_set_raw(handshake,hexid,0,"true",4);
-    if(!(from = hashname_key(handshake)))
+    // get attached hashname
+    tmp = lob_parse(handshake->body, handshake->body_len);
+    from = hashname_key(tmp, outer->head[0]);
+    if(!from)
     {
-      LOG("bad key handshake, no hashname: %s",lob_json(handshake));
+      LOG("bad link handshake, no hashname: %s",lob_json(handshake));
+      lob_free(tmp);
       lob_free(handshake);
       return NULL;
     }
+    util_hex(outer->head, 1, hexid);
+    lob_set(handshake,"csid",hexid);
     lob_set(handshake,"hashname",from->hashname);
+    lob_body(handshake, tmp->body, tmp->body_len); // re-attach as raw key
+    lob_free(tmp);
     hashname_free(from);
 
     // short-cut, if it's a key from an existing link, pass it on
-    if((link = xht_get(mesh->index,lob_get(handshake,"hashname")))) return link_receive_handshake(link, handshake, pipe);
+    if((link = mesh_linked(mesh,lob_get(handshake,"hashname")))) return link_receive_handshake(link, handshake, pipe);
     
     // extend the key json to make it compatible w/ normal patterns
     tmp = lob_new();
@@ -383,7 +427,7 @@ uint8_t mesh_receive(mesh_t mesh, lob_t outer, pipe_t pipe)
     
   }
   
-  LOG("dropping unknown outer packet with header %d %s",outer->head_len,util_hex(outer->head,outer->head_len,NULL));
+  LOG("dropping unknown outer packet with header %d %s",outer->head_len,lob_json(outer));
   lob_free(outer);
 
   return 10;

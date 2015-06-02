@@ -7,7 +7,7 @@ LIB = src/lib/lob.c src/lib/hashname.c src/lib/xht.c src/lib/js0n.c src/lib/base
 E3X = src/e3x/e3x.c src/e3x/channel.c src/e3x/self.c src/e3x/exchange.c src/e3x/event.c src/e3x/cipher.c
 MESH = src/mesh.c src/link.c src/pipe.c
 EXT = src/ext/stream.c src/ext/block.c
-NET = src/net/loopback.c src/net/udp4.c src/net/tcp4.c
+NET = src/net/loopback.c src/net/udp4.c src/net/tcp4.c src/net/serial.c
 UTIL = src/util/util.c src/util/uri.c src/util/chunks.c src/unix/util.c src/unix/util_sys.c
 
 # CS1a by default
@@ -43,11 +43,12 @@ CS_OBJFILES = $(patsubst %.c,%.o,$(CS))
 FULL_OBJFILES = $(LIB_OBJFILES) $(E3X_OBJFILES) $(MESH_OBJFILES) $(EXT_OBJFILES) $(NET_OBJFILES) $(UTIL_OBJFILES) $(CS_OBJFILES)
 
 IDGEN_OBJFILES = $(FULL_OBJFILES) util/idgen.o
-ROUTER_OBJFILES = $(FULL_OBJFILES) util/router.o
+ROUTER_OBJFILES = $(FULL_OBJFILES) util/router.o src/ext/router.o src/ext/path.o src/ext/peer.o
+PING_OBJFILES = $(FULL_OBJFILES) util/ping.o src/ext/path.o
 
 HEADERS=$(wildcard include/*.h)
 
-all: idgen router static
+all: idgen router ping static
 	@echo "TODO\t`git grep TODO | wc -l | tr -d ' '`"
 
 deps: 
@@ -64,9 +65,11 @@ libtelehash: $(FULL_OBJFILES)
 
 arduino: static
 	cp telehash.c arduino/src/telehash/
+	@cat src/e3x/cs2a_disabled.c src/e3x/cs3a_disabled.c >> arduino/src/telehash/telehash.c
+	cp src/e3x/cs1a/cs1a.c arduino/src/cs1a/
 	cp $(HEADERS) arduino/src/telehash/
 
-test: $(FULL_OBJFILES)
+test: $(FULL_OBJFILES) ping
 	cd test; $(MAKE) $(MFLAGS)
 
 %.o : %.c $(HEADERS)
@@ -75,8 +78,8 @@ test: $(FULL_OBJFILES)
 idgen: $(IDGEN_OBJFILES)
 	$(CC) $(CFLAGS) -o bin/idgen $(IDGEN_OBJFILES) $(LDFLAGS) 
 
-#ping:
-#	$(CC) $(CFLAGS) -o bin/ping util/ping.c src/*.c unix/util.c $(ARCH)
+ping: $(PING_OBJFILES)
+	$(CC) $(CFLAGS) -o bin/ping $(PING_OBJFILES) $(LDFLAGS) 
 
 router: $(ROUTER_OBJFILES)
 	$(CC) $(CFLAGS) -o bin/router $(ROUTER_OBJFILES) $(LDFLAGS) 

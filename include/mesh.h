@@ -13,14 +13,14 @@ struct mesh_struct
 {
   hashname_t id;
   char *uri;
-  lob_t keys;
+  lob_t keys, paths;
   e3x_self_t self;
   xht_t index;
   void *on; // internal list of triggers
   // shared network info
   uint16_t port_local, port_public;
   char *ipv4_local, *ipv4_public;
-  lob_t handshake, cached; // handshakes
+  lob_t handshakes, cached; // handshakes
 };
 
 // pass in a prime for the main index of hashnames+links+channels, 0 to use compiled default
@@ -33,11 +33,17 @@ uint8_t mesh_load(mesh_t mesh, lob_t secrets, lob_t keys);
 // creates and loads a new random hashname, returns secrets if it needs to be saved/reused
 lob_t mesh_generate(mesh_t mesh);
 
-// return the best current URI to this endpoint, optional override protocol
-char *mesh_uri(mesh_t mesh, char *protocol);
+// return the best current URI to this endpoint, optional base
+char *mesh_uri(mesh_t mesh, char *base);
+
+// generate json of mesh keys and current paths
+lob_t mesh_json(mesh_t mesh);
 
 // creates a link from the json format of {"hashname":"...","keys":{},"paths":[]}, optional direct pipe too
 link_t mesh_add(mesh_t mesh, lob_t json, pipe_t pipe);
+
+// return only if this hashname is currently linked (in any state)
+link_t mesh_linked(mesh_t mesh, char *hashname);
 
 // add a custom outgoing handshake packet to all links
 mesh_t mesh_handshake(mesh_t mesh, lob_t handshake);
