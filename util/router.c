@@ -8,80 +8,57 @@
 #include "mesh.h"
 #include "util_unix.h"
 #include "net_udp4.h"
-#include "net_tcp4.h"
 #include "ext.h"
+
+// whenever link state changes
+void is_linked(link_t link)
+{
+  printf("link is %s to %s\n",link_up(link)?"up":"down",lob_json(link_json(link)));
+}
 
 int main(int argc, char *argv[])
 {
-  lob_t id, options, json;
+  lob_t options, json;
   mesh_t mesh;
   net_udp4_t udp4;
-  net_tcp4_t tcp4;
   int port = 0;
+  int link = 0;
 
-  if(argc==2)
+  mesh = mesh_new();
+
+  // support "router 12345 54321" first arg listen, second to establish link to, using generated hashnames
+  if(argc >= 3)
   {
     port = atoi(argv[1]);
+    link = atoi(argv[2]);
+    mesh_generate(mesh);
+  }else{
+    lob_t id = util_fjson("id.json");
+    if(!id) return -1;
+    mesh_load(mesh,lob_get_json(id,"secrets"),lob_get_json(id,"keys"));
   }
 
-  id = util_fjson("id.json");
-  if(!id) return -1;
-  
-  mesh = mesh_new(0);
-  mesh_load(mesh,lob_get_json(id,"secrets"),lob_get_json(id,"keys"));
   mesh_on_discover(mesh,"auto",mesh_add); // auto-link anyone
-  mesh_on_open(mesh,"path",path_on_open); // add path support
+  mesh_on_link(mesh, "linked", is_linked); // callback for when link state changes
 
   options = lob_new();
   lob_set_int(options,"port",port);
 
   udp4 = net_udp4_new(mesh, options);
-  util_sock_timeout(udp4->server,100);
-
-  tcp4 = net_tcp4_new(mesh, options);
+  util_sock_timeout(net_udp4_socket(udp4),100);
 
   json = mesh_json(mesh);
   printf("%s\n",lob_json(json));
-  printf("%s\n",mesh_uri(mesh, NULL));
+  printf("using port %u\n",net_udp4_port(udp4));
 
-  while(net_udp4_receive(udp4) && net_tcp4_loop(tcp4));
-
-  /*
-  if(util_loadjson(s) != 0 || (sock = util_server(0,1000)) <= 0)
+  if(link)
   {
-    printf("failed to startup %s or %s\n", strerror(errno), crypt_err());
-    return -1;
+    net_udp4_direct(udp4, json, "127.0.0.1", link);
+    printf("sent hello to %d\n",link);
   }
 
-  printf("loaded hashname %s\n",s->id->hexname);
+  while(net_udp4_process(udp4));
 
-  // create/send a ping packet  
-  c = chan_new(s, bucket_get(s->seeds, 0), "link", 0);
-  p = chan_packet(c);
-  chan_send(c, p);
-  util_sendall(s,sock);
-
-  in = path_new("ipv4");
-  while(util_readone(s, sock, in) == 0)
-  {
-    switch_loop(s);
-
-    while((c = switch_pop(s)))
-    {
-      printf("channel active %d %s %s\n",c->ended,c->hexid,c->to->hexname);
-      if(util_cmp(c->type,"connect") == 0) ext_connect(c);
-      if(util_cmp(c->type,"link") == 0) ext_link(c);
-      if(util_cmp(c->type,"path") == 0) ext_path(c);
-      while((p = chan_pop(c)))
-      {
-        printf("unhandled channel packet %.*s\n", p->json_len, p->json);      
-        lob_free(p);
-      }
-    }
-
-    util_sendall(s,sock);
-  }
-  */
   perror("exiting");
   return 0;
 }

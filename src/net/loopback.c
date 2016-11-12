@@ -1,13 +1,15 @@
 #include <string.h>
 #include "net_loopback.h"
 
-void pair_send(pipe_t pipe, lob_t packet, link_t link)
+link_t pair_send(link_t link, lob_t packet, void *arg)
 {
-  net_loopback_t pair = (net_loopback_t)pipe->arg;
-  if(!pair || !packet || !link) return;
-  LOG("pair pipe from %s",link->id->hashname);
-  if(link->mesh == pair->a) mesh_receive(pair->b,packet,pipe);
-  if(link->mesh == pair->b) mesh_receive(pair->a,packet,pipe);
+  net_loopback_t pair = (net_loopback_t)arg;
+  if(!pair || !packet || !link) return link;
+  LOG("pair pipe from %s",hashname_short(link->id));
+  if(link->mesh == pair->a) mesh_receive(pair->b,packet);
+  else if(link->mesh == pair->b) mesh_receive(pair->a,packet);
+  else lob_free(packet);
+  return link;
 }
 
 net_loopback_t net_loopback_new(mesh_t a, mesh_t b)
@@ -18,21 +20,16 @@ net_loopback_t net_loopback_new(mesh_t a, mesh_t b)
   memset(pair,0,sizeof (struct net_loopback_struct));
   pair->a = a;
   pair->b = b;
-  pair->pipe = pipe_new("pair");
-  pair->pipe->id = strdup("loopback");
-  pair->pipe->arg = pair;
-  pair->pipe->send = pair_send;
 
   // ensure they're linked and piped together
-  link_pipe(link_keys(a,b->keys),pair->pipe);
-  link_pipe(link_keys(b,a->keys),pair->pipe);
+  link_pipe(link_get_keys(a,b->keys),pair_send,pair);
+  link_pipe(link_get_keys(b,a->keys),pair_send,pair);
 
   return pair;
 }
 
 void net_loopback_free(net_loopback_t pair)
 {
-  pipe_free(pair->pipe);
   free(pair);
   return;
 }

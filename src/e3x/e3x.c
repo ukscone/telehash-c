@@ -1,6 +1,6 @@
-#include "e3x.h"
-#include "e3x_cipher.h"
-#include "util_sys.h"
+#include "telehash.h"
+#include "telehash.h"
+#include "telehash.h"
 #include <string.h>
 
 static uint8_t _initialized = 0;
@@ -46,6 +46,15 @@ lob_t e3x_generate(void)
   return secrets;
 }
 
+
+static uint8_t (*frandom)(void) = (uint8_t (*)(void))util_sys_random;
+
+// set a callback for random
+void e3x_random(uint8_t (*frand)(void))
+{
+  frandom = frand;
+}
+
 // random bytes, from a supported cipher set
 uint8_t *e3x_rand(uint8_t *bytes, size_t len)
 {
@@ -56,7 +65,7 @@ uint8_t *e3x_rand(uint8_t *bytes, size_t len)
   // crypto lib didn't provide one, use platform's RNG
   while(len-- > 0)
   {
-    *x = (uint8_t)util_sys_random();
+    *x = frandom();
     x++;
   }
   return bytes;
@@ -65,7 +74,7 @@ uint8_t *e3x_rand(uint8_t *bytes, size_t len)
 // sha256 hashing, from one of the cipher sets
 uint8_t *e3x_hash(uint8_t *in, size_t len, uint8_t *out32)
 {
-  if(!in || !len || !out32) return out32;
+  if(!in || !out32) return out32;
   if(!e3x_cipher_default)
   {
     LOG("e3x not initialized, no cipher_set");

@@ -8,7 +8,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#include "util_sys.h"
+#include "telehash.h"
 
 at_t util_sys_seconds()
 {
@@ -26,6 +26,11 @@ unsigned long long util_sys_ms(long epoch)
 unsigned short util_sys_short(unsigned short x)
 {
   return ntohs(x);
+}
+
+unsigned long util_sys_long(unsigned long x)
+{
+  return ntohl(x);
 }
 
 void util_sys_random_init(void)
@@ -62,14 +67,29 @@ void util_sys_logging(int enabled)
   LOG("log output enabled");
 }
 
-void *util_sys_log(const char *file, int line, const char *function, const char * format, ...)
+void *util_sys_log(uint8_t level, const char *file, int line, const char *function, const char * format, ...)
 {
   char buffer[256];
   va_list args;
   if(!_logging) return NULL;
+  // https://en.wikipedia.org/wiki/Syslog#Severity_level
+  char *lstr = NULL;
+  switch(level)
+  {
+    case 0: lstr = "EMERG  "; break;
+    case 1: lstr = "ALERT  "; break;
+    case 2: lstr = "CRIT   "; break;
+    case 3: lstr = "ERROR  "; break;
+    case 4: lstr = "WARN   "; break;
+    case 5: lstr = "NOTICE "; break;
+    case 6: lstr = "INFO   "; break;
+    case 7: lstr = "DEBUG  "; break;
+    case 8: lstr = "CRAZY  "; break;
+    default: lstr = "?????? "; break;
+  }
   va_start (args, format);
   vsnprintf (buffer, 256, format, args);
-  fprintf(stderr,"%s:%d %s() %s\n", file, line, function, buffer);
+  fprintf(stderr,"%s%s:%d %s() %s\n",lstr,file, line, function, buffer);
   fflush(stderr);
   va_end (args);
   return NULL;

@@ -1,26 +1,8 @@
-#include "link.h"
+#include "telehash.h"
 #include <string.h>
 #include <stdlib.h>
-#include "util.h"
-#include "mesh.h"
-
-// internal structures to manage our link-local state about pipes and channels
-
-// list of active pipes and state per link
-typedef struct seen_struct
-{
-  pipe_t pipe;
-  uint32_t at;
-  struct seen_struct *next;
-} *seen_t;
-
-// these sit in the xht index to wrap the e3x_channel and recipient handler
-typedef struct chan_struct
-{
-  e3x_channel_t c3;
-  void *arg;
-  void (*handle)(link_t link, e3x_channel_t c3, void *arg);
-} *chan_t;
+#include "telehash.h"
+#include "telehash.h"
 
 link_t link_new(mesh_t mesh, hashname_t id)
 {
@@ -28,21 +10,15 @@ link_t link_new(mesh_t mesh, hashname_t id)
 
   if(!mesh || !id) return LOG("invalid args");
 
-  LOG("adding link %s",id->hashname);
-  if(!(link = malloc(sizeof (struct link_struct))))
-  {
-    hashname_free(id);
-    return NULL;
-  }
+  LOG("adding link %s",hashname_short(id));
+  if(!(link = malloc(sizeof (struct link_struct)))) return LOG("OOM");
   memset(link,0,sizeof (struct link_struct));
-  
-  link->id = id;
-  link->mesh = mesh;
-  xht_set(mesh->index,id->hashname,link);
 
-  // to size larger, app can xht_free(); link->channels = xht_new(BIGGER) at start itself
-  link->channels = xht_new(5); // index of all channels
-  link->index = xht_new(5); // index for active channels and extensions
+  link->id = hashname_dup(id);
+  link->csid = 0x01; // default state
+  link->mesh = mesh;
+  link->next = mesh->links;
+  mesh->links = link;
 
   return link;
 }
@@ -50,69 +26,116 @@ link_t link_new(mesh_t mesh, hashname_t id)
 void link_free(link_t link)
 {
   if(!link) return;
-  LOG("dropping link %s",link->id->hashname);
-  xht_set(link->mesh->index,link->id->hashname,NULL);
 
-  // TODO go through ->pipes
+  LOG("dropping link %s",hashname_short(link->id));
+  mesh_t mesh = link->mesh;
+  if(mesh->links == link)
+  {
+    mesh->links = link->next;
+  }else{
+    link_t li;
+    for(li = mesh->links;li;li = li->next) if(li->next == link)
+    {
+      li->next = link->next;
+    }
+  }
 
-  // TODO go through link->channels
-  xht_free(link->channels);
-  xht_free(link->index);
-
-  hashname_free(link->id);
+  // drop
   if(link->x)
   {
-    xht_set(link->mesh->index,link->token,NULL);
     e3x_exchange_free(link->x);
+    link->x = NULL;
   }
+
+  // notify pipe w/ NULL packet
+  if(link->send_cb) link->send_cb(link, NULL, link->send_arg);
+
+  // go through link->chans
+  chan_t c, cnext;
+  for(c = link->chans;c;c = cnext)
+  {
+    cnext = chan_next(c);
+    chan_free(c);
+  }
+
+  hashname_free(link->id);
+  lob_free(link->key);
   free(link);
 }
 
-link_t link_get(mesh_t mesh, char *hashname)
+link_t link_get(mesh_t mesh, hashname_t id)
 {
   link_t link;
-  hashname_t id;
 
-  if(!mesh || !hashname) return LOG("invalid args");
-  link = xht_get(mesh->index,hashname);
-  if(!link)
-  {
-    id = hashname_str(hashname);
-    if(!id) return LOG("invalid hashname %s",hashname);
-    link = link_new(mesh,id);
-  }
-
-  return link;
+  if(!mesh || !id) return LOG("invalid args");
+  for(link = mesh->links;link;link = link->next) if(hashname_cmp(id,link->id) == 0) return link;
+  return link_new(mesh,id);
 }
 
-link_t link_keys(mesh_t mesh, lob_t keys)
+// simple accessors
+hashname_t link_id(link_t link)
+{
+  if(!link) return NULL;
+  return link->id;
+}
+
+lob_t link_key(link_t link)
+{
+  if(!link) return NULL;
+  return link->key;
+}
+
+// get existing channel id if any
+chan_t link_chan_get(link_t link, uint32_t id)
+{
+  chan_t c;
+  if(!link || !id) return NULL;
+  for(c = link->chans;c;c = chan_next(c)) {
+    LOG("<%d><%d>",chan_id(c), id);
+    if(chan_id(c) == id) return c;
+  }
+  return NULL;
+}
+
+// get link info json
+lob_t link_json(link_t link)
+{
+  char hex[3];
+  lob_t json;
+  if(!link) return LOG("bad args");
+
+  json = lob_new();
+  lob_set(json,"hashname",hashname_char(link->id));
+  lob_set(json,"csid",util_hex(&link->csid, 1, hex));
+  lob_set_base32(json,"key",link->key->body,link->key->body_len);
+//  paths = lob_array(mesh->paths);
+//  lob_set_raw(json,"paths",0,(char*)paths->head,paths->head_len);
+//  lob_free(paths);
+  return json;
+}
+
+link_t link_get_keys(mesh_t mesh, lob_t keys)
 {
   uint8_t csid;
 
   if(!mesh || !keys) return LOG("invalid args");
   csid = hashname_id(mesh->keys,keys);
   if(!csid) return LOG("no supported key");
-  return link_key(mesh, hashname_im(keys,csid), csid);
+  lob_t key = hashname_im(keys,csid);
+  link_t ret = link_get_key(mesh, key, csid);
+  lob_free(key);
+  return ret;
 }
 
-link_t link_key(mesh_t mesh, lob_t key, uint8_t csid)
+link_t link_get_key(mesh_t mesh, lob_t key, uint8_t csid)
 {
-  hashname_t hn;
   link_t link;
 
   if(!mesh || !key) return LOG("invalid args");
   if(hashname_id(mesh->keys,key) > csid) return LOG("invalid csid");
 
-  hn = hashname_key(key, csid);
-  if(!hn) return LOG("invalid key");
-
-  link = link_get(mesh, hn->hashname);
-  if(link)
-  {
-    hashname_free(hn);
-  }else{
-    link = link_new(mesh,hn);
-  }
+  link = link_get(mesh, hashname_vkey(key, csid));
+  if(!link) return LOG("invalid key");
 
   // load key if it's not yet
   if(!link->key) return link_load(link, csid, key);
@@ -127,14 +150,19 @@ link_t link_load(link_t link, uint8_t csid, lob_t key)
   lob_t copy;
 
   if(!link || !csid || !key) return LOG("bad args");
-  if(link->x) return link;
+  if(link->x)
+  {
+    link->csid = link->x->csid; // repair in case mesh_unlink was called, any better place?
+    return link;
+  }
 
-  LOG("adding %x key to link %s",csid,link->id->hashname);
-  
+  LOG("adding %x key to link %s",csid,hashname_short(link->id));
+
   // key must be bin
   if(key->body_len)
   {
-    copy = lob_copy(key);
+    copy = lob_new();
+    lob_body(copy,key->body,key->body_len);
   }else{
     util_hex(&csid,1,hex);
     copy = lob_get_base32(key,hex);
@@ -142,75 +170,33 @@ link_t link_load(link_t link, uint8_t csid, lob_t key)
   link->x = e3x_exchange_new(link->mesh->self, csid, copy);
   if(!link->x)
   {
+    LOG("invalid %x key %s %s",csid,util_hex(copy->body,copy->body_len,NULL),lob_json(key));
     lob_free(copy);
-    return LOG("invalid %x key %d %s",csid,key->body_len,lob_json(key));
+    return NULL;
   }
 
   link->csid = csid;
   link->key = copy;
-  
-  // route packets to this token
-  util_hex(e3x_exchange_token(link->x),16,link->token);
-  xht_set(link->mesh->index,link->token,link);
+
   e3x_exchange_out(link->x, util_sys_seconds());
-  LOG("new session token %s to %s",link->token,link->id->hashname);
+  LOG("new exchange session to %s",hashname_short(link->id));
 
   return link;
 }
 
-// try to turn a path into a pipe
-pipe_t link_path(link_t link, lob_t path)
+// add a delivery pipe to this link
+link_t link_pipe(link_t link, link_t (*send)(link_t link, lob_t packet, void *arg), void *arg)
 {
-  pipe_t pipe;
+  if(!link || !send) return NULL;
 
-  if(!link || !path) return LOG("bad args");
+  if(send == link->send_cb && arg == link->send_arg) return link; // noop
+  if(link->send_cb) LOG_INFO("replacing existing pipe on link");
 
-  if(!(pipe = mesh_path(link->mesh, link, path))) return NULL;
-  link_pipe(link, pipe);
-  return pipe;
-}
+  link->send_cb = send;
+  link->send_arg = arg;
 
-// add a pipe to this link if not yet
-link_t link_pipe(link_t link, pipe_t pipe)
-{
-  seen_t seen;
-
-  if(!link || !pipe) return LOG("bad args");
-
-  // see if we've seen it already
-  for(seen = link->pipes; seen; seen = seen->next)
-  {
-    if(seen->pipe == pipe) return link;
-  }
-
-  // add this pipe to this link
-  LOG("adding pipe %s",pipe->id);
-  if(!(seen = malloc(sizeof (struct seen_struct)))) return NULL;
-  memset(seen,0,sizeof (struct seen_struct));
-  seen->pipe = pipe;
-  seen->next = link->pipes;
-  link->pipes = seen;
-  
-  // make sure it gets sync'd
-  lob_free(link_sync(link));
-
-  return link;
-}
-
-// iterate through existing pipes for a link
-pipe_t link_pipes(link_t link, pipe_t after)
-{
-  seen_t seen;
-  if(!link) return LOG("bad args");
-
-  // see if we've seen it already
-  for(seen = link->pipes; seen; seen = seen->next)
-  {
-    if(!after) return seen->pipe;
-    if(after == seen->pipe) after = NULL;
-  }
-  
-  return NULL;
+  // flush handshake
+  return link_sync(link);
 }
 
 // is the link ready/available
@@ -223,86 +209,101 @@ link_t link_up(link_t link)
   return link;
 }
 
-// add a custom outgoing handshake packet
-link_t link_handshake(link_t link, lob_t handshake)
-{
-  if(!link) return NULL;
-  link->handshakes = lob_link(handshake, link->handshakes);
-  return link;
-}
-
 // process an incoming handshake
-link_t link_receive_handshake(link_t link, lob_t inner, pipe_t pipe)
+link_t link_receive_handshake(link_t link, lob_t inner)
 {
-  link_t ready;
-  uint32_t out, err;
-  seen_t seen;
+  uint32_t in, out, at, err;
   uint8_t csid = 0;
-  char *hexid;
-  lob_t attached, outer = lob_linked(inner);
+  lob_t outer = lob_linked(inner);
 
   if(!link || !inner || !outer) return LOG("bad args");
-  hexid = lob_get(inner, "csid");
-  if(!lob_get(link->mesh->keys, hexid)) return LOG("unsupported csid %s",hexid);
-  util_unhex(hexid, 2, &csid);
-  attached = lob_parse(inner->body, inner->body_len);
-  if(!link->key && link_key(link->mesh, attached, csid) != link) return LOG("invalid/mismatch link handshake");
-  if((err = e3x_exchange_verify(link->x,outer))) return LOG("handshake verification fail: %d",err);
 
-  out = e3x_exchange_out(link->x,0);
-  ready = link_up(link);
-
-  // if bad at, always send current handshake
-  if(e3x_exchange_in(link->x, lob_get_uint(inner,"at")) < out)
+  // inner/link must be validated by caller already, we just load if missing
+  if(!link->key)
   {
-    LOG("old/bad at: %s (%d,%d,%d)",lob_json(inner),lob_get_int(inner,"at"),e3x_exchange_in(link->x,0),e3x_exchange_out(link->x,0));
-    // just reset pipe seen and call link_sync to resend handshake
-    for(seen = link->pipes;pipe && seen;seen = seen->next) if(seen->pipe == pipe) seen->at = 0;
-    lob_free(link_sync(link));
-    return NULL;
+    util_unhex(lob_get(inner, "csid"), 2, &csid);
+    if(!link_load(link, csid, inner))
+    {
+      lob_free(inner);
+      return LOG("load key failed for %s %u %s",hashname_short(link->id),csid,util_hex(inner->body,inner->body_len,NULL));
+    }
   }
 
-  // trust/add this pipe
-  if(pipe) link_pipe(link,pipe);
+  if((err = e3x_exchange_verify(link->x,outer)))
+  {
+    lob_free(inner);
+    return LOG("handshake verification fail: %d",err);
+  }
+
+  in = e3x_exchange_in(link->x,0);
+  out = e3x_exchange_out(link->x,0);
+  at = lob_get_uint(inner,"at");
+  link_t ready = link_up(link);
+
+  // if bad at, always send current handshake
+  if(e3x_exchange_in(link->x, at) < out)
+  {
+    LOG("old handshake: %s (%d,%d,%d)",lob_json(inner),at,in,out);
+    link_sync(link);
+    lob_free(inner);
+    return link;
+  }
 
   // try to sync ephemeral key
-  if(!e3x_exchange_sync(link->x,outer)) return LOG("sync failed");
-  
+  if(!e3x_exchange_sync(link->x,outer))
+  {
+    lob_free(inner);
+    return LOG("sync failed");
+  }
+
   // we may need to re-sync
-  if(out != e3x_exchange_out(link->x,0)) lob_free(link_sync(link));
-  
+  if(out != e3x_exchange_out(link->x,0)) link_sync(link);
+
   // notify of ready state change
   if(!ready && link_up(link))
   {
     LOG("link ready");
     mesh_link(link->mesh, link);
   }
-  
+
+  lob_free(inner);
   return link;
 }
 
+// forward declare
+chan_t link_process_chan(chan_t c, uint32_t now);
 // process a decrypted channel packet
-link_t link_receive(link_t link, lob_t inner, pipe_t pipe)
+link_t link_receive(link_t link, lob_t inner)
 {
-  chan_t chan;
+  chan_t c;
 
   if(!link || !inner) return LOG("bad args");
 
+  LOG("<-- %d",lob_get_int(inner,"c"));
   // see if existing channel and send there
-  if((chan = xht_get(link->index, lob_get(inner,"c"))))
+  if((c = link_chan_get(link, lob_get_int(inner,"c"))))
   {
-    LOG("\t<-- %s",lob_json(inner));
-    if(e3x_channel_receive(chan->c3, inner)) return LOG("channel receive error, dropping %s",lob_json(inner));
-    if(pipe) link_pipe(link,pipe); // we trust the pipe at this point
-    if(chan->handle) chan->handle(link, chan->c3, chan->arg);
-    // check if there's any packets to be sent back
-    return link_flush(link, chan->c3, NULL);
+    LOG("found chan");
+    // consume inner
+    chan_receive(c, inner);
+    // process any changes
+    link->chans = link_process_chan(link->chans, 0);
+    return link;
   }
 
   // if it's an open, validate and fire event
-  if(!lob_get(inner,"type")) return LOG("invalid channel open, no type %s",lob_json(inner));
-  if(!e3x_exchange_cid(link->x, inner)) return LOG("invalid channel open id %s",lob_json(inner));
-  if(pipe) link_pipe(link,pipe); // we trust the pipe at this point
+  if(!lob_get(inner,"type"))
+  {
+    LOG("invalid channel open, no type %s",lob_json(inner));
+    lob_free(inner);
+    return NULL;
+  }
+  if(!e3x_exchange_cid(link->x, inner))
+  {
+    LOG("invalid channel open id %s",lob_json(inner));
+    lob_free(inner);
+    return NULL;
+  }
   inner = mesh_open(link->mesh,link,inner);
   if(inner)
   {
@@ -310,95 +311,60 @@ link_t link_receive(link_t link, lob_t inner, pipe_t pipe)
     lob_free(inner);
     return NULL;
   }
-  
+
   return link;
 }
 
-// send this packet to the best pipe
+// deliver this packet
 link_t link_send(link_t link, lob_t outer)
 {
-  pipe_t pipe;
-  
-  if(!link) return LOG("bad args");
-  if(!link->pipes || !(pipe = link->pipes->pipe)) return LOG("no network");
+  if(!outer) return LOG_INFO("send packet missing");
+  if(!link || !link->send_cb)
+  {
+    lob_free(outer);
+    return LOG_WARN("no network");
+  }
 
-  pipe->send(pipe, outer, link);
+  if(!link->send_cb(link, outer, link->send_arg))
+  {
+    lob_free(outer);
+    return LOG_WARN("delivery failed");
+  }
+
   return link;
 }
 
-lob_t link_handshakes(link_t link)
+lob_t link_handshake(link_t link)
 {
-  uint32_t i;
-  uint8_t csid;
-  char *key;
-  lob_t tmp, hs = NULL, handshakes = NULL;
   if(!link) return NULL;
-  
-  // no keys means we have to generate a handshake for each key
-  if(!link->x)
-  {
-    for(i=0;(key = lob_get_index(link->mesh->keys,i));i+=2)
-    {
-      util_unhex(key,2,&csid);
-      hs = lob_new();
-      tmp = hashname_im(link->mesh->keys, csid);
-      lob_body(hs, lob_raw(tmp), lob_len(tmp));
-      lob_free(tmp);
-      handshakes = lob_link(hs, handshakes);
-    }
-  }else{ // generate one just for this csid
-    handshakes = lob_new();
-    tmp = hashname_im(link->mesh->keys, link->csid);
-    lob_body(handshakes, lob_raw(tmp), lob_len(tmp));
-    lob_free(tmp);
-  }
+  if(!link->x) return LOG_DEBUG("no exchange");
 
-  // add any custom per-link
-  for(hs = link->handshakes; hs; hs = lob_linked(hs)) handshakes = lob_link(lob_copy(hs), handshakes);
+  LOG_DEBUG("generating a new handshake in %lu out %lu",link->x->in,link->x->out);
+  lob_t handshake = lob_new();
+  lob_t tmp = hashname_im(link->mesh->keys, link->csid);
+  lob_body(handshake, lob_raw(tmp), lob_len(tmp));
+  lob_free(tmp);
 
-  // add any mesh-wide handshakes
-  for(hs = link->mesh->handshakes; hs; hs = lob_linked(hs)) handshakes = lob_link(lob_copy(hs), handshakes);
-  
-  // encrypt them if we can
-  if(link->x)
-  {
-    tmp = handshakes;
-    handshakes = NULL;
-    for(hs = tmp; hs; hs = lob_linked(hs)) handshakes = lob_link(e3x_exchange_handshake(link->x, hs), handshakes);
-    lob_free(tmp);
-  }
+  // encrypt it
+  tmp = handshake;
+  handshake = e3x_exchange_handshake(link->x, tmp);
+  lob_free(tmp);
 
-  return handshakes;
+  return handshake;
 }
 
-// make sure all pipes have the current handshake
-lob_t link_sync(link_t link)
+// send current handshake
+link_t link_sync(link_t link)
 {
-  uint32_t at;
-  seen_t seen;
-  lob_t handshakes = NULL, hs = NULL;
   if(!link) return LOG("bad args");
   if(!link->x) return LOG("no exchange");
+  if(!link->send_cb) return LOG("no network");
 
-  at = e3x_exchange_out(link->x,0);
-  LOG("link sync at %d",at);
-  for(seen = link->pipes;seen;seen = seen->next)
-  {
-    if(!seen->pipe || !seen->pipe->send || seen->at == at) continue;
-
-    // only create if we have to
-    if(!handshakes) handshakes = link_handshakes(link);
-
-    seen->at = at;
-    for(hs = handshakes; hs; hs = lob_linked(hs)) seen->pipe->send(seen->pipe, lob_copy(hs), link);
-  }
-
-  // caller can re-use and must free
-  return handshakes;
+  return link_send(link, link_handshake(link));
 }
 
 // trigger a new exchange sync
-lob_t link_resync(link_t link)
+link_t link_resync(link_t link)
 {
   if(!link) return LOG("bad args");
   if(!link->x) return LOG("no exchange");
@@ -409,75 +375,96 @@ lob_t link_resync(link_t link)
 }
 
 // create/track a new channel for this open
-e3x_channel_t link_channel(link_t link, lob_t open)
+chan_t link_chan(link_t link, lob_t open)
 {
-  chan_t chan;
-  e3x_channel_t c3;
+  chan_t c;
   if(!link || !open) return LOG("bad args");
 
   // add an outgoing cid if none set
   if(!lob_get_int(open,"c")) lob_set_uint(open,"c",e3x_exchange_cid(link->x, NULL));
-  c3 = e3x_channel_new(open);
-  if(!c3) return LOG("invalid open %s",lob_json(open));
-  LOG("new outgoing channel open: %s",lob_get(open,"type"));
+  c = chan_new(open);
+  if(!c) return LOG("invalid open %s",lob_json(open));
+  LOG("new outgoing channel %d open: %s",chan_id(c), lob_get(open,"type"));
 
-  // add this channel to the link's channel index
-  if(!(chan = malloc(sizeof (struct chan_struct))))
-  {
-    e3x_channel_free(c3);
-    return LOG("OOM");
-  }
-  memset(chan,0,sizeof (struct chan_struct));
-  chan->c3 = c3;
-  xht_set(link->channels, e3x_channel_uid(c3), chan);
-  xht_set(link->index, e3x_channel_c(c3), chan);
+  c->link = link;
+  c->next = link->chans;
+  link->chans = c;
 
-  return c3;
-}
-
-// set up internal handler for all incoming packets on this channel
-link_t link_handle(link_t link, e3x_channel_t c3, void (*handle)(link_t link, e3x_channel_t c3, void *arg), void *arg)
-{
-  chan_t chan;
-  if(!link || !c3) return LOG("bad args");
-  chan = xht_get(link->channels, e3x_channel_uid(c3));
-  if(!chan) return LOG("unknown channel %s",e3x_channel_uid(c3));
-
-  chan->handle = handle;
-  chan->arg = arg;
-
-  return link;
-}
-
-// process any outgoing packets for this channel, optionally send given packet too
-link_t link_flush(link_t link, e3x_channel_t c3, lob_t inner)
-{
-  if(!link || !c3) return LOG("bad args");
-  
-  if(inner) e3x_channel_send(c3, inner);
-
-  while((inner = e3x_channel_sending(c3)))
-  {
-    LOG("\t--> %s",lob_json(inner));
-    link_send(link, e3x_exchange_send(link->x, inner));
-    lob_free(inner);
-  }
-  
-  // TODO if channel is now ended, remove from link->index
-
-  return link;
+  return c;
 }
 
 // encrypt and send this one packet on this pipe
-link_t link_direct(link_t link, lob_t inner, pipe_t pipe)
+link_t link_direct(link_t link, lob_t inner)
 {
   if(!link || !inner) return LOG("bad args");
-  if(!pipe && (!link->pipes || !(pipe = link->pipes->pipe))) return LOG("no network");
+  if(!link->send_cb)
+  {
+    LOG_WARN("no network, dropping %s",lob_json(inner));
+    return NULL;
+  }
 
   // add an outgoing cid if none set
   if(!lob_get_int(inner,"c")) lob_set_uint(inner,"c",e3x_exchange_cid(link->x, NULL));
 
-  pipe->send(pipe, e3x_exchange_send(link->x, inner), link);
-  
-  return link;
+  lob_t outer = e3x_exchange_send(link->x, inner);
+  lob_free(inner);
+
+  return link_send(link, outer);
+}
+
+// force link down, end channels and generate all events
+link_t link_down(link_t link)
+{
+  if(!link) return NULL;
+
+  LOG("forcing link down for %s",hashname_short(link->id));
+
+  // generate down event if up
+  if(link_up(link))
+  {
+    e3x_exchange_down(link->x);
+    mesh_link(link->mesh, link);
+  }
+
+  // end all channels
+  chan_t c, cnext;
+  for(c = link->chans;c;c = cnext)
+  {
+    cnext = chan_next(c);
+    chan_err(c, "disconnected");
+    chan_process(c, 0);
+  }
+
+  // remove pipe
+  if(link->send_cb)
+  {
+    link->send_cb(link, NULL, link->send_arg); // notify jic
+    link->send_cb = NULL;
+    link->send_arg = NULL;
+  }
+
+  return NULL;
+}
+
+// recursive to handle deletes
+chan_t link_process_chan(chan_t c, uint32_t now)
+{
+  if(!c) return NULL;
+  chan_t next = link_process_chan(chan_next(c), now);
+  if(!chan_process(c, now)) return next;
+  c->next = next;
+  return c;
+}
+
+// process any channel timeouts based on the current/given time
+link_t link_process(link_t link, uint32_t now)
+{
+  if(!link || !now) return LOG("bad args");
+  link->chans = link_process_chan(link->chans, now);
+  if(link->csid) return link;
+
+  // flagged to remove, do that now
+  link_down(link);
+  link_free(link);
+  return NULL;
 }

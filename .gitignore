@@ -2,7 +2,9 @@
 *.a
 *.json
 *.dSYM
+*.dtps
 .DS_Store
-test/bin/*
 node_modules/
 telehash.c
+telehash.h
+/TAGS

@@ -1,14 +1,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "e3x.h"
-#include "util.h"
+#include "telehash.h"
+#include "telehash.h"
 
 // make a new exchange
 // packet must contain the raw key in the body
 e3x_exchange_t e3x_exchange_new(e3x_self_t self, uint8_t csid, lob_t key)
 {
-  uint8_t i, token[16];
+  uint16_t i;
+  uint8_t token[16];
   e3x_exchange_t x;
   remote_t remote;
   e3x_cipher_t cs = NULL;
@@ -37,7 +38,7 @@ e3x_exchange_t e3x_exchange_new(e3x_self_t self, uint8_t csid, lob_t key)
   x->cs = cs;
   x->self = self;
   memcpy(x->token,token,16);
-  
+
   // determine order, if we sort first, we're even
   for(i = 0; i < key->body_len; i++)
   {
@@ -46,7 +47,7 @@ e3x_exchange_t e3x_exchange_new(e3x_self_t self, uint8_t csid, lob_t key)
     break;
   }
   x->cid = x->order;
-  
+
   return x;
 }
 
@@ -106,7 +107,7 @@ uint32_t e3x_exchange_out(e3x_exchange_t x, uint32_t at)
       if(x->out % 2 == 0) x->out++;
     }
   }
-  
+
   return x->out;
 }
 
@@ -114,11 +115,26 @@ uint32_t e3x_exchange_out(e3x_exchange_t x, uint32_t at)
 uint32_t e3x_exchange_in(e3x_exchange_t x, uint32_t at)
 {
   if(!x) return 0;
-  
+
   // ensure at is newer and valid, or acking our out
   if(at && at > x->in && at >= x->out && (((at % 2)+1) == x->order || at == x->out)) x->in = at;
-  
+
   return x->in;
+}
+
+// drops ephemeral state, out=0
+e3x_exchange_t e3x_exchange_down(e3x_exchange_t x)
+{
+  if(!x) return NULL;
+  x->out = 0;
+  if(x->ephem)
+  {
+    x->cs->ephemeral_free(x->ephem);
+    x->ephem = NULL;
+    memset(x->eid,0,16);
+    x->last = 0;
+  }
+  return x;
 }
 
 // synchronize to incoming ephemeral key and set out at = in at, returns x if success, NULL if not
@@ -127,11 +143,11 @@ e3x_exchange_t e3x_exchange_sync(e3x_exchange_t x, lob_t outer)
   ephemeral_t ephem;
   if(!x || !outer) return LOG("bad args");
   if(outer->body_len < 16) return LOG("outer too small");
-  
+
   if(x->in > x->out) x->out = x->in;
 
   // if the incoming ephemeral key is different, create a new ephemeral
-  if(memcmp(outer->body,x->eid,16) != 0)
+  if(util_ct_memcmp(outer->body,x->eid,16) != 0)
   {
     ephem = x->cs->ephemeral_new(x->remote,outer);
     if(!ephem) return LOG("ephemeral creation failed %s",x->cs->err());
@@ -148,34 +164,40 @@ e3x_exchange_t e3x_exchange_sync(e3x_exchange_t x, lob_t outer)
 // just a convenience, generates handshake w/ current e3x_exchange_at value
 lob_t e3x_exchange_handshake(e3x_exchange_t x, lob_t inner)
 {
-  lob_t key;
+  lob_t tmp;
   uint8_t i;
+  uint8_t local = 0;
   if(!x) return LOG("invalid args");
   if(!x->out) return LOG("no out set");
 
   // create deprecated key handshake inner from all supported csets
   if(!inner)
   {
+    local = 1;
     inner = lob_new();
     lob_set(inner, "type", "key");
     // loop through all ciphersets for any keys
     for(i=0; i<CS_MAX; i++)
     {
-      if(!(key = x->self->keys[i])) continue;
+      if(!(tmp = x->self->keys[i])) continue;
       // this csid's key is the body, rest is intermediate in json
       if(e3x_cipher_sets[i] == x->cs)
       {
-        lob_body(inner,key->body,key->body_len);
+        lob_body(inner,tmp->body,tmp->body_len);
       }else{
-        lob_set(inner,e3x_cipher_sets[i]->hex,lob_get(key,"hash"));
+        uint8_t hash[32];
+        e3x_hash(tmp->body,tmp->body_len,hash);
+        lob_set_base32(inner,e3x_cipher_sets[i]->hex,hash,32);
       }
     }
   }
 
   // set standard values
   lob_set_uint(inner,"at",x->out);
-  
-  return e3x_exchange_message(x, inner);
+
+  tmp = e3x_exchange_message(x, inner);
+  if(!local) return tmp;
+  return lob_link(tmp, inner);
 }
 
 // simple encrypt/decrypt conversion of any packet for channels
@@ -190,7 +212,7 @@ lob_t e3x_exchange_receive(e3x_exchange_t x, lob_t outer)
   return inner;
 }
 
-// comes from channel 
+// comes from channel
 lob_t e3x_exchange_send(e3x_exchange_t x, lob_t inner)
 {
   lob_t outer;
@@ -207,7 +229,7 @@ uint32_t e3x_exchange_cid(e3x_exchange_t x, lob_t incoming)
 {
   uint32_t cid;
   if(!x) return 0;
-  
+
   // in outgoing mode, just return next valid one
   if(!incoming)
   {
@@ -230,4 +252,3 @@ uint8_t *e3x_exchange_token(e3x_exchange_t x)
   if(!x) return NULL;
   return x->token;
 }
-

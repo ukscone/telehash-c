@@ -1,14 +1,14 @@
-#include "lob.h"
+#include "telehash.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdarg.h>
-#include "util.h" // util_sort(), util_sys_short()
-#include "e3x.h" // e3x_rand()
-#include "js0n.h"
-#include "base32.h"
-#include "chacha.h"
+#include "telehash.h" // util_sort(), util_sys_short()
+#include "telehash.h" // e3x_rand()
+#include "telehash.h"
+#include "telehash.h"
+#include "telehash.h"
 
 lob_t lob_new()
 {
@@ -64,6 +64,7 @@ lob_t lob_linked(lob_t parent)
 lob_t lob_free(lob_t p)
 {
   if(!p) return NULL;
+  if(p->next) LOG("possible mem leak, lob is in a list: %s->%s",lob_json(p),lob_json(p->next));
 //  LOG("LOB-- %p",p);
   if(p->chain) lob_free(p->chain);
   if(p->cache) free(p->cache);
@@ -107,7 +108,7 @@ lob_t lob_parse(const uint8_t *raw, size_t len)
 
   // validate any json
   jtest = 0;
-  if(p->head_len >= 2) js0n("\0",1,(char*)p->head,p->head_len,&jtest);
+  if(p->head_len >= 7) js0n("\0",1,(char*)p->head,p->head_len,&jtest);
   if(jtest) return lob_free(p);
 
   return p;
@@ -128,6 +129,7 @@ uint8_t *lob_head(lob_t p, uint8_t *head, size_t len)
   memmove(p->body,p->raw+(2+p->head_len),p->body_len);
   // copy in new head
   if(head) memcpy(p->head,head,len);
+  else memset(p->head,0,len); // helps with debugging
   p->head_len = len;
   nlen = util_sys_short((uint16_t)len);
   memcpy(p->raw,&nlen,2);
@@ -145,6 +147,7 @@ uint8_t *lob_body(lob_t p, uint8_t *body, size_t len)
   p->head = p->raw+2;
   p->body = p->raw+(2+p->head_len);
   if(body) memcpy(p->body,body,len); // allows lob_body(p,NULL,100) to allocate space
+  else memset(p->body,0,len); // helps with debugging
   p->body_len = len;
   return p->body;
 }
@@ -166,6 +169,30 @@ lob_t lob_append_str(lob_t p, char *chunk)
 {
   if(!p || !chunk) return LOG("bad args");
   return lob_append(p, (uint8_t*)chunk, strlen(chunk));
+}
+
+size_t lob_head_len(lob_t p)
+{
+  if(!p) return 0;
+  return p->head_len;
+}
+
+uint8_t *lob_head_get(lob_t p)
+{
+  if(!p) return NULL;
+  return p->head;
+}
+
+size_t lob_body_len(lob_t p)
+{
+  if(!p) return 0;
+  return p->body_len;
+}
+
+uint8_t *lob_body_get(lob_t p)
+{
+  if(!p) return NULL;
+  return p->body;
 }
 
 // TODO allow empty val to remove existing
@@ -222,7 +249,6 @@ lob_t lob_set_raw(lob_t p, char *key, size_t klen, char *val, size_t vlen)
 lob_t lob_set_printf(lob_t p, char *key, const char *format, ...)
 {
   va_list ap, cp;
-  size_t len;
   char *val;
 
   if(!p || !key || !format) return LOG("bad args");
@@ -230,12 +256,14 @@ lob_t lob_set_printf(lob_t p, char *key, const char *format, ...)
   va_start(ap, format);
   va_copy(cp, ap);
 
-  len = (size_t) vsnprintf(NULL, 0, format, cp);
-  if((val = malloc(len))) vsprintf(val, format, ap);
+  vasprintf(&val, format, ap);
+
   va_end(ap);
   va_end(cp);
+  if(!val) return NULL;
 
   lob_set(p, key, val);
+  free(val);
   return p;
 }
 
@@ -254,6 +282,60 @@ lob_t lob_set_uint(lob_t p, char *key, unsigned int val)
   if(!p || !key) return LOG("bad args");
   sprintf(num,"%u",val);
   lob_set_raw(p, key, 0, num, 0);
+  return p;
+}
+
+// embedded friendly float to string, printf float support is a morass
+lob_t lob_set_float(lob_t p, char *key, float value, uint8_t places)
+{
+  int digit;
+  float tens = 0.1;
+  int tenscount = 0;
+  int i;
+  float tempfloat = value;
+  char buf[16];
+
+  if(!p || !key) return LOG("bad args");
+  
+  buf[0] = 0; // reset
+
+  float d = 0.5;
+  if(value < 0) d *= -1.0;
+  for(i = 0; i < places; i++) d/= 10.0;
+  tempfloat +=  d;
+
+  if(value < 0) tempfloat *= -1.0;
+  while((tens * 10.0) <= tempfloat)
+  {
+    tens *= 10.0;
+    tenscount += 1;
+  }
+
+  if(value < 0) sprintf(buf+strlen(buf),"-");
+
+  if(tenscount == 0) sprintf(buf+strlen(buf),"0");
+
+  for(i=0; i< tenscount; i++)
+  {
+    digit = (int) (tempfloat/tens);
+    sprintf(buf+strlen(buf),"%d",digit);
+    tempfloat = tempfloat - ((float)digit * tens);
+    tens /= 10.0;
+  }
+
+  if(places > 0)
+  {
+    sprintf(buf+strlen(buf),".");
+
+    for(i = 0; i < places; i++) {
+      tempfloat *= 10.0;
+      digit = (int) tempfloat;
+      sprintf(buf+strlen(buf),"%d",digit);
+      tempfloat = tempfloat - (float) digit;
+    }
+  }
+
+  lob_set_raw(p, key, 0, buf, 0);
   return p;
 }
 
@@ -293,7 +375,18 @@ lob_t lob_set_base32(lob_t p, char *key, uint8_t *bin, size_t blen)
   base32_encode(bin, blen, val+1,vlen+1);
   val[vlen+1] = '"';
   lob_set_raw(p,key,0,val,vlen+2);
+  free(val);
   return p;
+}
+
+// creates cached string on lob
+char *lob_cache(lob_t p, size_t len)
+{
+  if(!p) return NULL;
+  if(p->cache) free(p->cache);
+  if(!(p->cache = malloc(len+1))) return LOG("OOM");
+  p->cache[0] = 0; // flag
+  return p->cache+1;
 }
 
 // return null-terminated json string
@@ -301,8 +394,8 @@ char *lob_json(lob_t p)
 {
   if(!p) return NULL;
   if(p->head_len < 2) return NULL;
-  if(p->cache) free(p->cache);
-  if(!(p->cache = malloc(p->head_len+1))) return LOG("OOM");
+  // direct/internal use of cache
+  if(!lob_cache(p,p->head_len)) return LOG("OOM");
   memcpy(p->cache,p->head,p->head_len);
   p->cache[p->head_len] = 0;
   return p->cache;
@@ -316,11 +409,11 @@ char *unescape(lob_t p, char *start, size_t len)
 
   if(!p || !start || len <= 0) return NULL;
 
-  // make a copy if we haven't yet
-  if(!p->cache) lob_json(p);
+  // make a fresh cache if we haven't yet or was used external
+  if(!p->cache || p->cache[0] == 0) lob_json(p);
   if(!p->cache) return NULL;
-  
-  // switch pointer to the json copy 
+
+  // switch pointer to the json copy
   start = p->cache + (start - (char*)p->head);
 
   // terminate it
@@ -393,7 +486,14 @@ unsigned int lob_get_uint(lob_t p, char *key)
   return (unsigned int)strtoul(val,NULL,10);
 }
 
-// returns ["0","1","2"] 
+float lob_get_float(lob_t p, char *key)
+{
+  char *val = lob_get(p,key);
+  if(!val) return 0;
+  return strtof(val,NULL);
+}
+
+// returns ["0","1","2"]
 char *lob_get_index(lob_t p, uint32_t i)
 {
   char *val;
@@ -537,56 +637,20 @@ int lob_cmp(lob_t a, lob_t b)
     i++;
   }
 
-  return memcmp(a->body,b->body,a->body_len);
+  return util_ct_memcmp(a->body,b->body,a->body_len);
 }
 
 lob_t lob_set_json(lob_t p, lob_t json)
 {
-  char *part;
+  char *key;
   uint32_t i = 0;
 
-  while((part = lob_get_index(json,i)))
+  while((key = lob_get_index(json,i)))
   {
-    lob_set(p,part,lob_get_index(json,i+1));
+    lob_set_raw(p,key,0,lob_get_raw(json,key),lob_get_len(json,key));
     i += 2;
   }
   return p;
-}
-
-// sha256("telehash")
-static const uint8_t _cloak_key[32] = {0xd7, 0xf0, 0xe5, 0x55, 0x54, 0x62, 0x41, 0xb2, 0xa9, 0x44, 0xec, 0xd6, 0xd0, 0xde, 0x66, 0x85, 0x6a, 0xc5, 0x0b, 0x0b, 0xab, 0xa7, 0x6a, 0x6f, 0x5a, 0x47, 0x82, 0x95, 0x6c, 0xa9, 0x45, 0x9a};
-
-// handles cloaking conveniently, len is lob_len()+(8*rounds)
-uint8_t *lob_cloak(lob_t p, uint8_t rounds)
-{
-  uint8_t *ret, *cur;
-  size_t len;
-  if(!p || !rounds) return lob_raw(p);
-  len = lob_len(p);
-  len += 8*rounds;
-  if(!(ret = malloc(len))) return LOG("OOM needed %d",len);
-  memset(ret,0,len);
-  memcpy(ret+(8*rounds),lob_raw(p),lob_len(p));
-
-  while(rounds)
-  {
-    cur = ret+(8*(rounds-1));
-    e3x_rand(cur, 8);
-    if(cur[0] == 0) continue; // re-random until not a 0 byte to start
-    rounds--;
-    chacha20((uint8_t*)_cloak_key, cur, cur+8, len-((8*rounds)+8));
-  }
-
-  return ret;
-}
-
-// recursively decloaks and parses
-lob_t lob_decloak(uint8_t *cloaked, size_t len)
-{
-  if(!cloaked || !len) return LOG("bad args");
-  if(len < 8 || cloaked[0] == 0) return lob_parse(cloaked, len);
-  chacha20((uint8_t*)_cloak_key, cloaked, cloaked+8, (uint32_t)len-8);
-  return lob_decloak(cloaked+8, len-8);
 }
 
 // linked list utilities
@@ -610,6 +674,7 @@ lob_t lob_push(lob_t list, lob_t p)
   while(end->next) end = end->next;
   end->next = p;
   p->prev = end;
+  p->next = NULL; // safety
   return list;
 }
 
@@ -657,9 +722,9 @@ lob_t lob_insert(lob_t list, lob_t after, lob_t p)
 
 lob_t lob_freeall(lob_t list)
 {
-  lob_t next;
   if(!list) return NULL;
-  next = list->next;
+  lob_t next = list->next;
+  list->next = NULL;
   lob_free(list);
   return lob_freeall(next);
 }
@@ -676,4 +741,31 @@ lob_t lob_next(lob_t list)
 {
   if(!list) return NULL;
   return list->next;
+}
+
+// return json array of the list
+lob_t lob_array(lob_t list)
+{
+  size_t len = 3; // []\0
+  char *json;
+  lob_t item, ret;
+
+  if(!(json = malloc(len))) return LOG("OOM");
+  sprintf(json,"[");
+  for(item = list;item;item = lob_next(item))
+  {
+    len += item->head_len+1;
+    if(!(json = util_reallocf(json, len))) return LOG("OOM");
+    sprintf(json+strlen(json),"%.*s,",(int)item->head_len,item->head);
+  }
+  if(len == 3)
+  {
+    sprintf(json+strlen(json),"]");
+  }else{
+    sprintf(json+(strlen(json)-1),"]");
+  }
+  ret = lob_new();
+  lob_head(ret,(uint8_t*)json, strlen(json));
+  free(json);
+  return ret;
 }

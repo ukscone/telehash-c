@@ -2,8 +2,6 @@
 #define link_h
 #include <stdint.h>
 
-typedef struct link_struct *link_t;
-
 #include "mesh.h"
 
 struct link_struct
@@ -13,19 +11,28 @@ struct link_struct
   e3x_exchange_t x;
   mesh_t mesh;
   lob_t key;
-  lob_t handshakes;
-  uint8_t csid;
-  xht_t index, channels;
-  char token[33];
+  chan_t chans;
+
+  // transport plumbing
+  void *send_arg;
+  link_t (*send_cb)(link_t link, lob_t packet, void *arg);
   
   // these are for internal link management only
-  struct seen_struct *pipes;
+  link_t next;
+  uint8_t csid;
 };
 
 // these all create or return existing one from the mesh
-link_t link_get(mesh_t mesh, char *hashname);
-link_t link_keys(mesh_t mesh, lob_t keys); // adds in the right key
-link_t link_key(mesh_t mesh, lob_t key, uint8_t csid); // adds in from the body
+link_t link_get(mesh_t mesh, hashname_t id);
+link_t link_get_keys(mesh_t mesh, lob_t keys); // adds in the right key
+link_t link_get_key(mesh_t mesh, lob_t key, uint8_t csid); // adds in from the body
+
+// simple accessors
+hashname_t link_id(link_t link);
+lob_t link_key(link_t link);
+
+// get link info json
+lob_t link_json(link_t link);
 
 // removes from mesh
 void link_free(link_t link);
@@ -33,50 +40,40 @@ void link_free(link_t link);
 // load in the key to existing link
 link_t link_load(link_t link, uint8_t csid, lob_t key);
 
-// try to turn a path into a pipe and add it to the link
-pipe_t link_path(link_t link, lob_t path);
-
-// just add a pipe directly
-link_t link_pipe(link_t link, pipe_t pipe);
-
-// iterate through existing pipes for a link
-pipe_t link_pipes(link_t link, pipe_t after);
-
-// add a custom outgoing handshake packet for this link
-link_t link_handshake(link_t link, lob_t handshake);
+// add a delivery pipe to this link
+link_t link_pipe(link_t link, link_t (*send)(link_t link, lob_t packet, void *arg), void *arg);
 
 // process a decrypted channel packet
-link_t link_receive(link_t link, lob_t inner, pipe_t pipe);
+link_t link_receive(link_t link, lob_t inner);
 
 // process an incoming handshake
-link_t link_receive_handshake(link_t link, lob_t handshake, pipe_t pipe);
+link_t link_receive_handshake(link_t link, lob_t handshake);
 
-// try to deliver this packet to the best pipe
-link_t link_send(link_t link, lob_t inner);
+// try to deliver this encrypted packet
+link_t link_send(link_t link, lob_t outer);
 
-// return current handshake(s)
-lob_t link_handshakes(link_t link);
+// encrypt and send this packet
+link_t link_direct(link_t link, lob_t inner);
 
-// send current handshake(s) to all pipes and return them
-lob_t link_sync(link_t link);
+// return current handshake (caller free's)
+lob_t link_handshake(link_t link);
 
-// generate new encrypted handshake(s) and sync
-lob_t link_resync(link_t link);
+// send current handshake(s) 
+link_t link_sync(link_t link);
+
+// force generate new encrypted handshake(s) and sync
+link_t link_resync(link_t link);
 
 // is the other endpoint connected and the link available, NULL if not
 link_t link_up(link_t link);
 
+// force link down, ends channels and generates events
+link_t link_down(link_t link);
+
 // create/track a new channel for this open
-e3x_channel_t link_channel(link_t link, lob_t open);
+chan_t link_chan(link_t link, lob_t open);
 
-// set up internal handler for all incoming packets on this channel
-link_t link_handle(link_t link, e3x_channel_t c3, void (*handle)(link_t link, e3x_channel_t c3, void *arg), void *arg);
-
-// encrypt and send any outgoing packets for this channel, send the inner if given
-link_t link_flush(link_t link, e3x_channel_t c3, lob_t inner);
-
-// encrypt and send this one packet on this pipe
-link_t link_direct(link_t link, lob_t inner, pipe_t pipe);
-
+// process any channel timeouts based on the current/given time
+link_t link_process(link_t link, uint32_t now);
 
 #endif

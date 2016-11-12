@@ -17,7 +17,7 @@ typedef struct pipe_serial_struct
 pipe_t serial_flush(pipe_t pipe)
 {
   int ret, count;
-  uint8_t *out, len;
+  uint8_t len;
   lob_t packet;
   uint8_t c1;
   pipe_serial_t to;
@@ -33,23 +33,23 @@ pipe_t serial_flush(pipe_t pipe)
   if(count)
   {
     LOG("read %d bytes from %s",count,pipe->id);
-    util_chunks_ack(to->chunks);
   }
 
   // any incoming full packets can be received
   while((packet = util_chunks_receive(to->chunks))) mesh_receive(to->net->mesh, packet, pipe);
 
   // write the next waiting chunk
-  while((out = util_chunks_out(to->chunks, &len)))
+  while((len = util_chunks_len(to->chunks)))
   {
-    if((ret = to->write(out, len)) == len)
+    if((ret = to->write(util_chunks_write(to->chunks), len)) > 0)
     {
       LOG("wrote %d size chunk to %s",ret,pipe->id);
       // blocks till next incoming chunk is read before sending more
+      util_chunks_written(to->chunks,len);
     }else{
       LOG("chunk write failed, %d != %d",ret,len);
       // TODO, write a full chunk of zeros to clear any line errors and reset state?
-      util_chunks_next(to->chunks);
+      break;
     }
   }
 
@@ -74,7 +74,7 @@ net_serial_t net_serial_send(net_serial_t net, const char *name, lob_t packet)
   return net;
 }
 
-pipe_t net_serial_add(net_serial_t net, const char *name, int (*read)(void), int (*write)(uint8_t *buf, size_t len), uint8_t buffer)
+net_serial_t net_serial_add(net_serial_t net, const char *name, int (*read)(void), int (*write)(uint8_t *buf, size_t len), uint8_t buffer)
 {
   pipe_t pipe;
   pipe_serial_t to;
@@ -108,7 +108,7 @@ pipe_t net_serial_add(net_serial_t net, const char *name, int (*read)(void), int
   to->read = read;
   to->write = write;
 
-  return pipe;
+  return net;
 }
 
 net_serial_t net_serial_new(mesh_t mesh, lob_t options)

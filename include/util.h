@@ -3,10 +3,12 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "util_sys.h"
 #include "util_uri.h"
 #include "util_chunks.h"
+#include "util_frames.h"
 #include "util_unix.h"
 
 // make sure out is 2*len + 1
@@ -28,5 +30,14 @@ void *util_reallocf(void *ptr, size_t size);
 // get a "now" timestamp to do millisecond timers
 uint64_t util_at(void); // only pass at into _since()
 uint32_t util_since(uint64_t at); // get ms since the at
+
+// Use a constant time comparison function to avoid timing attacks
+int util_ct_memcmp(const void* s1, const void* s2, size_t n);
+
+// embedded may not have strdup but it's a kinda handy shortcut
+char *util_strdup(const char *str);
+#ifndef strdup
+#define strdup util_strdup
+#endif
 
 #endif

@@ -1,4 +1,5 @@
-#include "ext.h"
+#include <string.h>
+#include "telehash.h"
 
 // list of active pipes and state per link
 typedef struct ping_struct
@@ -9,19 +10,19 @@ typedef struct ping_struct
 } *ping_t;
 
 // handle incoming packets for the built-in stream channel
-void path_ping_handler(link_t link, e3x_channel_t chan, void *arg)
+void path_ping_handler(chan_t chan, void *arg)
 {
   lob_t packet;
   ping_t ping = (ping_t)arg;
-  if(!link || !ping) return;
+  if(!chan || !ping) return;
 
-  while((packet = e3x_channel_receiving(chan)))
+  while((packet = chan_receiving(chan)))
   {
     LOG("response pong %s",lob_json(packet));
     if(ping->pong)
     {
       lob_set_uint(packet,"rtt",util_since(ping->at));
-      ping->pong(link, packet, ping->arg);
+      ping->pong(chan->link, packet, ping->arg);
       ping->pong = NULL;
     }
     // TODO process incoming paths for public IPs
@@ -29,13 +30,13 @@ void path_ping_handler(link_t link, e3x_channel_t chan, void *arg)
     lob_free(packet);
   }
   
-  if(e3x_channel_state(chan) == ENDED) free(ping);
+  if(chan_state(chan) == CHAN_ENDED) free(ping);
 }
 
 // send a path ping and get callback event
 link_t path_ping(link_t link, void (*pong)(link_t link, lob_t status, void *arg), void *arg)
 {
-  e3x_channel_t chan;
+  chan_t chan;
   lob_t open;
   ping_t ping;
 
@@ -51,9 +52,9 @@ link_t path_ping(link_t link, void (*pong)(link_t link, lob_t status, void *arg)
   // paths
 
   // create new channel, set it up, then receive this open
-  chan = link_channel(link, open);
-  link_handle(link, chan, path_ping_handler, ping);
-  link_flush(link, chan, open);
+  chan = link_chan(link, open);
+  chan_handle(chan, path_ping_handler, ping);
+  chan_send(chan, open);
   return link;
 }
 
@@ -78,7 +79,7 @@ lob_t path_on_open(link_t link, lob_t open)
   {
     if(pipe->path) lob_set_raw(tmp,"path",0,(char*)pipe->path->head,pipe->path->head_len);
     else lob_set_raw(tmp,"path",0,"{}",0);
-    link_direct(link, tmp, pipe);
+    link_direct(link, lob_copy(tmp), pipe);
   }
   lob_free(tmp);
 

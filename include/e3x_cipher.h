@@ -11,9 +11,6 @@
 // this is the overall holder for each cipher set, function pointers to cs specific implementations
 typedef struct e3x_cipher_struct
 {
-  uint8_t id, csid;
-  char hex[3], *alg;
-
   // these are common functions each one needs to support
   uint8_t *(*rand)(uint8_t *bytes, size_t len); // write len random bytes, returns bytes as well for convenience
   uint8_t *(*hash)(uint8_t *in, size_t len, uint8_t *out32); // sha256's the in, out32 must be [32] from caller
@@ -40,14 +37,18 @@ typedef struct e3x_cipher_struct
   void (*ephemeral_free)(ephemeral_t ephemeral);
   lob_t (*ephemeral_encrypt)(ephemeral_t ephemeral, lob_t inner);
   lob_t (*ephemeral_decrypt)(ephemeral_t ephemeral, lob_t outer);
+
+  uint8_t id, csid;
+  char hex[3], *alg;
 } *e3x_cipher_t;
 
 
 // all possible cipher sets, as index into cipher_sets global
 #define CS_1a 0
-#define CS_2a 1
-#define CS_3a 2
-#define CS_MAX 3
+#define CS_1c 1
+#define CS_2a 2
+#define CS_3a 3
+#define CS_MAX 4
 
 extern e3x_cipher_t e3x_cipher_sets[]; // all created
 extern e3x_cipher_t e3x_cipher_default; // just one of them for the rand/hash utils
@@ -60,6 +61,7 @@ e3x_cipher_t e3x_cipher_set(uint8_t csid, char *hex);
 
 // init functions for each
 e3x_cipher_t cs1a_init(lob_t options);
+e3x_cipher_t cs1c_init(lob_t options);
 e3x_cipher_t cs2a_init(lob_t options);
 e3x_cipher_t cs3a_init(lob_t options);
 

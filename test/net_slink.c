@@ -27,7 +27,7 @@ static uint8_t status = 0;
 // exit as soon as the link is up
 void link_check(link_t link)
 {
-  LOG("CHECK %s",link->id->hashname);
+  LOG("CHECK %s",hashname_char(link->id));
   status = link_up(link) ? 1 : 0;
 }
 
@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
   mesh_t mesh;
   net_serial_t s;
 
-  mesh = mesh_new(0);
+  mesh = mesh_new();
   fail_unless(mesh_generate(mesh));
   mesh_on_discover(mesh,"auto",mesh_add); // accept anyone
   mesh_on_link(mesh, "test", link_check); // testing the event being triggered

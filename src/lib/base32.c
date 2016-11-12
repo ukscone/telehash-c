@@ -19,7 +19,7 @@
 
 #include <string.h>
 
-#include "base32.h"
+#include "telehash.h"
 
 size_t base32_decode(const char *encoded, size_t length, uint8_t *result, size_t bufSize) {
   int buffer = 0;
@@ -65,6 +65,7 @@ size_t base32_decode(const char *encoded, size_t length, uint8_t *result, size_t
   }
   return count;
 }
+
 
 size_t base32_encode(const uint8_t *data, size_t length, char *result, size_t bufSize) {
   if (!data || !result || !bufSize || !length) return 0;

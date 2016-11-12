@@ -33,7 +33,7 @@ lob_t lob_free(lob_t p); // returns NULL for convenience
 
 // creates a new parent packet chained to the given child one, so freeing the new packet also free's it
 lob_t lob_chain(lob_t child);
-// manually chain together two packets
+// manually chain together two packets, returns parent, frees any existing child, creates parent if none
 lob_t lob_link(lob_t parent, lob_t child);
 // return a linked child if any
 lob_t lob_linked(lob_t parent);
@@ -50,11 +50,20 @@ size_t lob_len(lob_t p);
 // return null-terminated json header only
 char *lob_json(lob_t p);
 
+// creates temporarily cached string on lob (used by lob_json), free'd w/ lob or next cache call
+char *lob_cache(lob_t p, size_t len);
+
 // set/store these in the current packet
 uint8_t *lob_head(lob_t p, uint8_t *head, size_t len);
 uint8_t *lob_body(lob_t p, uint8_t *body, size_t len);
 lob_t lob_append(lob_t p, uint8_t *chunk, size_t len);
 lob_t lob_append_str(lob_t p, char *chunk);
+
+// core accessors
+size_t lob_head_len(lob_t p);
+uint8_t *lob_head_get(lob_t p);
+size_t lob_body_len(lob_t p);
+uint8_t *lob_body_get(lob_t p);
 
 // convenient json setters/getters, always return given lob so they're chainable
 lob_t lob_set_raw(lob_t p, char *key, size_t klen, char *val, size_t vlen); // raw
@@ -62,6 +71,7 @@ lob_t lob_set(lob_t p, char *key, char *val); // escapes value
 lob_t lob_set_len(lob_t p, char *key, size_t klen, char *val, size_t vlen); // same as lob_set
 lob_t lob_set_int(lob_t p, char *key, int val);
 lob_t lob_set_uint(lob_t p, char *key, unsigned int val);
+lob_t lob_set_float(lob_t p, char *key, float val, uint8_t places);
 lob_t lob_set_printf(lob_t p, char *key, const char *format, ...);
 lob_t lob_set_base32(lob_t p, char *key, uint8_t *val, size_t vlen);
 
@@ -81,6 +91,7 @@ int lob_cmp(lob_t a, lob_t b);
 char *lob_get(lob_t p, char *key);
 int lob_get_int(lob_t p, char *key);
 unsigned int lob_get_uint(lob_t p, char *key);
+float lob_get_float(lob_t p, char *key);
 
 char *lob_get_index(lob_t p, uint32_t i); // returns ["0","1","2","3"] or {"0":"1","2":"3"}
 
@@ -96,12 +107,6 @@ lob_t lob_get_json(lob_t p, char *key); // creates new packet from key:object va
 lob_t lob_get_array(lob_t p, char *key); // list of packet->next from key:[object,object]
 lob_t lob_get_base32(lob_t p, char *key); // decoded binary is the return body
 
-// handles cloaking conveniently, len is lob_len()+(8*rounds)
-uint8_t *lob_cloak(lob_t p, uint8_t rounds);
-
-// decloaks and parses
-lob_t lob_decloak(uint8_t *cloaked, size_t len);
-
 // TODO, this would be handy, js syntax to get a json value
 // char *lob_eval(lob_t p, "foo.bar[0]['zzz']");
 
@@ -115,5 +120,6 @@ lob_t lob_insert(lob_t list, lob_t after, lob_t p); // inserts item in list afte
 lob_t lob_freeall(lob_t list); // frees all
 lob_t lob_match(lob_t list, char *key, char *value); // find the first packet in the list w/ the matching key/value
 lob_t lob_next(lob_t list);
+lob_t lob_array(lob_t list); // return json array of the list
 
 #endif

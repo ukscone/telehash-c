@@ -46,12 +46,12 @@ int writerB(uint8_t *buf, size_t len)
 
 int main(int argc, char **argv)
 {
-  mesh_t meshA = mesh_new(3);
+  mesh_t meshA = mesh_new();
   fail_unless(meshA);
   lob_t secretsA = mesh_generate(meshA);
   fail_unless(secretsA);
 
-  mesh_t meshB = mesh_new(3);
+  mesh_t meshB = mesh_new();
   fail_unless(meshB);
   lob_t secretsB = mesh_generate(meshB);
   fail_unless(secretsB);
@@ -74,11 +74,13 @@ int main(int argc, char **argv)
   link_sync(linkAB);
   // let serial go go go
   int loop;
-  for(loop = 1000; loop; loop--)
+  for(loop = 2000; loop; loop--)
   {
     net_serial_loop(netB);
     net_serial_loop(netA);
   }
+
+  LOG("BA %d AB %d",e3x_exchange_out(linkBA->x,0),e3x_exchange_out(linkAB->x,0));
   fail_unless(e3x_exchange_out(linkBA->x,0) >= e3x_exchange_out(linkAB->x,0));
   fail_unless(e3x_exchange_out(linkBA->x,0) == e3x_exchange_out(linkAB->x,0));
 

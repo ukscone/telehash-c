@@ -10,13 +10,13 @@ typedef struct e3x_exchange_struct
 {
   e3x_cipher_t cs; // convenience
   e3x_self_t self;
-  uint8_t csid, order;
-  char hex[3];
   remote_t remote;
   ephemeral_t ephem;
-  uint8_t token[16], eid[16];
   uint32_t in, out;
   uint32_t cid, last;
+  uint8_t token[16], eid[16];
+  uint8_t csid, order;
+  char hex[3];
 } *e3x_exchange_t;
 
 // make a new exchange
@@ -37,6 +37,9 @@ uint32_t e3x_exchange_out(e3x_exchange_t x, uint32_t at);
 
 // synchronize to incoming ephemeral key and set out at = in at, returns x if success, NULL if not
 e3x_exchange_t e3x_exchange_sync(e3x_exchange_t x, lob_t outer);
+
+// drops ephemeral state, out=0
+e3x_exchange_t e3x_exchange_down(e3x_exchange_t x);
 
 // generates handshake w/ current e3x_exchange_out value and ephemeral key
 lob_t e3x_exchange_handshake(e3x_exchange_t x, lob_t inner);
